@@ -1,5 +1,4 @@
 CLAUDE.md
-__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -9,4 +8,3 @@ pramaan.db
 venv/
 *.egg-info/
 .pytest_cache/
-src/pipeline/__pycache__
