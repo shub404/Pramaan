@@ -1,1 +1,12 @@
-claude.md
+CLAUDE.md
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+pramaan.db
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+src/pipeline/__pycache__

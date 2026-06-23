@@ -1,9 +1,9 @@
 import asyncio
-import re
-import uuid
-from contextlib import asynccontextmanager
+import re                                       # used to validate youtube url
+import uuid                                     # used to generate unique ids
+from contextlib import asynccontextmanager      # used to create startup & shutdown event handlers
 
-import httpx
+import httpx                                    # used to make http requests to ollama
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -18,7 +18,7 @@ from src.database import (
 )
 from src.models.schemas import ClaimObject
 
-
+# making a resuable regex
 _YOUTUBE_PATTERN = re.compile(
     r"^https?://(www\.)?(youtube\.com/watch\?v=[\w-]{11}|youtu\.be/[\w-]{11})"
 )
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
             if response.status_code != 200:
                 raise RuntimeError(
                     f"Ollama returned HTTP {response.status_code}. "
-                    "Ensure the Ollama service is healthy before starting LiveFact AI."
+                    "Ensure the Ollama service is healthy before starting Pramaan."
                 )
         except httpx.ConnectError:
             raise RuntimeError(
@@ -50,13 +50,13 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="LiveFact AI", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Pramaan", version="0.1.0", lifespan=lifespan)  # this creates a server
 
 
-class VerifyRequest(BaseModel):
+class VerifyRequest(BaseModel):          # BaseModel is used to validate the url structure
     url: str
 
-
+# dummy data for now, later replaced by pipeline
 async def _placeholder_pipeline(session_uuid: str):
     claim_id = str(uuid.uuid4())
     placeholder = ClaimObject(
@@ -87,9 +87,9 @@ async def verify_video(request: VerifyRequest, background_tasks: BackgroundTasks
     if not _YOUTUBE_PATTERN.match(request.url):
         raise HTTPException(status_code=422, detail="Invalid YouTube URL.")
 
-    session_uuid = str(uuid.uuid4())
-    await create_session(session_uuid, request.url)
-    background_tasks.add_task(_placeholder_pipeline, session_uuid)
+    session_uuid = str(uuid.uuid4())            # generate unique session id
+    await create_session(session_uuid, request.url)     # passs it here
+    background_tasks.add_task(_placeholder_pipeline, session_uuid)      # start the pipeline
 
     return {"session_uuid": session_uuid}
 

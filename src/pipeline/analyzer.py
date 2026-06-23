@@ -3,13 +3,10 @@ from urllib.parse import urlparse
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.config import DOMAIN_TIER_WEIGHTS, NLI_MODEL
+from src.config import DOMAIN_TIER_WEIGHTS
 from src.models.schemas import ClaimObject, EvidenceSource
-
-_tokenizer: AutoTokenizer | None = None
-_nli_model: AutoModelForSequenceClassification | None = None
+from src.pipeline._model_cache import get_nli_components
 
 _TIER4_DOMAINS = {"reddit.com", "twitter.com", "x.com"}
 _TIER1_SUFFIXES = {"gov", "edu", "int"}
@@ -19,17 +16,7 @@ _NLI_CONTRADICTION = 0
 _NLI_NEUTRAL = 1
 _NLI_ENTAILMENT = 2
 
-
-def _get_nli_model() -> tuple[AutoTokenizer, AutoModelForSequenceClassification]:
-    global _tokenizer, _nli_model
-    if _tokenizer is None or _nli_model is None:
-        _tokenizer = AutoTokenizer.from_pretrained(NLI_MODEL)
-        _nli_model = AutoModelForSequenceClassification.from_pretrained(NLI_MODEL)
-        _nli_model = _nli_model.to("cpu")
-        _nli_model.eval()
-    return _tokenizer, _nli_model
-
-
+# assigns weight as per the importance of each domain
 def _resolve_domain_tier(url: str) -> tuple[int, float]:
     try:
         hostname = urlparse(url).hostname or ""
@@ -52,12 +39,12 @@ def _resolve_domain_tier(url: str) -> tuple[int, float]:
 
     return 3, 0.50
 
-
+# runs the NLI model against each evidence sentence and returns probability of each
 def _run_nli_batch(
     claim_text: str,
     evidence_items: list[dict],
 ) -> list[tuple[float, float, float]]:
-    tokenizer, model = _get_nli_model()
+    tokenizer, model = get_nli_components()
     results: list[tuple[float, float, float]] = []
 
     for item in evidence_items:
@@ -80,7 +67,7 @@ def _run_nli_batch(
 
     return results
 
-
+# takes the input of above function and calculates the final verdict
 async def evaluate_fact(claim: ClaimObject, evidence_items: list[dict]) -> dict:
     if not evidence_items:
         return {
@@ -115,17 +102,20 @@ async def evaluate_fact(claim: ClaimObject, evidence_items: list[dict]) -> dict:
             )
         )
 
+        # assigns weight to the given probability
         weighted_confidence_sum += source_confidence * weight
         weighted_entailment_sum += p_entailment * weight
         weighted_contradiction_sum += p_contradiction * weight
         weighted_neutral_sum += p_neutral * weight
         weight_total += weight
-
+    
+    # takes average of each probability
     composite_confidence_score = weighted_confidence_sum / weight_total
     avg_entailment = weighted_entailment_sum / weight_total
     avg_contradiction = weighted_contradiction_sum / weight_total
     avg_neutral = weighted_neutral_sum / weight_total
 
+    # declares final verdict!
     if avg_entailment >= 0.60 and avg_entailment > avg_contradiction:
         verdict_label = "SUPPORTED"
     elif avg_contradiction >= 0.60 and avg_contradiction > avg_entailment:

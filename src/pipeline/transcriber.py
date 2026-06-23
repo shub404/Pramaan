@@ -1,7 +1,10 @@
 import asyncio
 import re
 
+import nltk
 from youtube_transcript_api import YouTubeTranscriptApi
+
+nltk.download("punkt_tab", quiet=True)
 
 _VIDEO_ID_PATTERNS = [
     re.compile(r"(?:youtube\.com/watch\?(?:.*&)?v=)([a-zA-Z0-9_-]{11})"),
@@ -9,12 +12,11 @@ _VIDEO_ID_PATTERNS = [
     re.compile(r"(?:youtube\.com/(?:embed|shorts|live)/)([a-zA-Z0-9_-]{11})"),
 ]
 
-_SENTENCE_BOUNDARY = re.compile(r"[.?!]\s*$")
 _WORD_TARGET = 500
 _SENTENCE_OVERLAP = 2
 
 
-def extract_video_id(url: str) -> str:
+def extract_video_id(url: str) -> str:          # used to extract 11 digit video id from url
     for pattern in _VIDEO_ID_PATTERNS:
         match = pattern.search(url)
         if match:
@@ -22,41 +24,57 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Cannot extract a valid YouTube video ID from: {url}")
 
 
-def _build_sentences(fragments: list[dict]) -> list[dict]:
-    sentences = []
-    buffer_text = ""
-    buffer_start: float | None = None
-    buffer_end = 0.0
+def _build_sentences(fragments: list[dict]) -> list[dict]:      # input as list of fragments, and output as complete sentences with start and end timestamp
+    text_parts: list[str] = []  
+    offsets: list[tuple[int, float, float]] = []
+    current_char = 0
 
     for fragment in fragments:
-        raw_text = fragment.get("text", "").strip()
-        if not raw_text:
+        text = fragment.get("text", "").strip()
+        if not text:
+            continue
+        frag_start = float(fragment["start"])
+        frag_end = frag_start + float(fragment.get("duration", 0))
+        offsets.append((current_char, frag_start, frag_end))
+        text_parts.append(text)
+        current_char += len(text) + 1
+
+    if not offsets:
+        return []
+
+    full_text = " ".join(text_parts)                # join each element in text_parts with " "
+    raw_sentences = nltk.sent_tokenize(full_text)     #  split full_text into sentences
+
+    sentences: list[dict] = []
+    search_from = 0
+    # to convert (0, 0, 2), (12, 2, 4) into 
+    # {"text": "Hello world", "start": 0, "end": 2}..
+    for sent in raw_sentences:
+        sent = sent.strip()
+        if not sent:
             continue
 
-        start = float(fragment["start"])
-        duration = float(fragment.get("duration", 0))
+        pos = full_text.find(sent, search_from)
+        if pos == -1:
+            pos = search_from
 
-        if buffer_start is None:
-            buffer_start = start
+        start_time = offsets[0][1]
+        for char_start, frag_start, _ in offsets:
+            if char_start <= pos:
+                start_time = frag_start
+            else:
+                break
 
-        buffer_text = (buffer_text + " " + raw_text).strip()
-        buffer_end = start + duration
+        end_pos = pos + len(sent) - 1
+        end_time = offsets[-1][2]                   # -1 becuase we need end time of last fragment (which corresponds to the last character of the sentence)
+        for char_start, _, frag_end in offsets:     # _ means here we dont care about that value
+            if char_start <= end_pos:
+                end_time = frag_end
+            else:
+                break
 
-        if _SENTENCE_BOUNDARY.search(buffer_text):
-            sentences.append({
-                "text": buffer_text,
-                "start": buffer_start,
-                "end": buffer_end,
-            })
-            buffer_text = ""
-            buffer_start = None
-
-    if buffer_text and buffer_start is not None:
-        sentences.append({
-            "text": buffer_text,
-            "start": buffer_start,
-            "end": buffer_end,
-        })
+        sentences.append({"text": sent, "start": start_time, "end": end_time})
+        search_from = pos + len(sent)
 
     return sentences
 

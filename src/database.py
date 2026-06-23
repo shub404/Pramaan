@@ -1,4 +1,4 @@
-import aiosqlite
+import aiosqlite                                # using aiosqlite, cuz normal sqlite would block other process while one is happening
 from datetime import datetime, timezone
 
 from src.config import DB_PATH
@@ -14,10 +14,11 @@ async def init_db():
                 created_at   TIMESTAMP NOT NULL
             )
         """)
+        # uses foreign key
         await db.execute("""
             CREATE TABLE IF NOT EXISTS claims (
                 claim_id                  TEXT PRIMARY KEY,
-                session_uuid              TEXT NOT NULL REFERENCES sessions(session_uuid),
+                session_uuid              TEXT NOT NULL REFERENCES sessions(session_uuid), 
                 timestamp_start           INTEGER,
                 timestamp_end             INTEGER,
                 claim_text                TEXT,
@@ -64,7 +65,7 @@ async def insert_claims(claims: list[ClaimObject], session_uuid: str):
         )
         await db.commit()
 
-
+# change status from pending/verified/false etc
 async def update_claim_status(claim_id: str, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(

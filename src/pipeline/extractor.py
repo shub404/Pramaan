@@ -2,16 +2,16 @@ import hashlib
 
 import httpx
 from pydantic import BaseModel, ValidationError
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import util
 
 from src.config import (
-    EMBEDDING_MODEL,
     LLM_MODEL,
     MAX_CLAIMS_PER_VIDEO,
     OLLAMA_BASE_URL,
     SEMANTIC_DEDUPLICATION_THRESHOLD,
 )
 from src.models.schemas import ClaimObject
+from src.pipeline._model_cache import get_embedding_model
 
 
 class ExtractedClaim(BaseModel):
@@ -42,22 +42,15 @@ _SYSTEM_PROMPT = (
     "Return ONLY valid JSON matching the required schema. No preamble. No explanation."
 )
 
+# backup warning prompt to return only JSON format
 _STRICT_ADDENDUM = (
     "\n\nCRITICAL: Output ONLY the JSON object. Any text outside the JSON structure "
     "will cause a system failure."
 )
 
 _MAX_LLM_RETRIES = 2
-_embedding_model: SentenceTransformer | None = None
 
-
-def _get_embedding_model() -> SentenceTransformer:
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
-    return _embedding_model
-
-
+# Extract the claims from the chunk of transcript provided
 async def _extract_from_chunk(
     client: httpx.AsyncClient, chunk: dict
 ) -> list[ExtractedClaim]:
@@ -92,7 +85,7 @@ async def _extract_from_chunk(
 
     return []
 
-
+# Remove duplicates from the claims returned by above function
 def deduplicate_claims(claims: list[ClaimObject]) -> list[ClaimObject]:
     seen: dict[str, ClaimObject] = {}
     for claim in claims:
@@ -106,7 +99,7 @@ def deduplicate_claims(claims: list[ClaimObject]) -> list[ClaimObject]:
     if len(unique) < 2:
         return unique
 
-    model = _get_embedding_model()
+    model = get_embedding_model()
     embeddings = model.encode([c.claim_text for c in unique], convert_to_tensor=True)
     cos_sim_matrix = util.cos_sim(embeddings, embeddings)
 
@@ -141,7 +134,8 @@ def deduplicate_claims(claims: list[ClaimObject]) -> list[ClaimObject]:
 
     return result
 
-
+# sort by importance, and remove irrelevant claims 
+# also generates claim id for each
 async def extract_claims_from_chunks(
     chunks: list[dict], video_url: str
 ) -> list[ClaimObject]:
@@ -168,6 +162,8 @@ async def extract_claims_from_chunks(
 
     deduplicated = deduplicate_claims(raw)
 
+    # completely ignores of importance_score is 1
+    # considers verifying once if the score is > 1
     if not deduplicated or all(c.importance_score == 1 for c in deduplicated):
         return []
 
