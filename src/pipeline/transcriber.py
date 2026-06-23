@@ -1,12 +1,7 @@
 import asyncio
 import re
 
-from youtube_transcript_api import (
-    NoTranscriptFound,
-    TranscriptsDisabled,
-    VideoUnavailable,
-    YouTubeTranscriptApi,
-)
+from youtube_transcript_api import YouTubeTranscriptApi
 
 _VIDEO_ID_PATTERNS = [
     re.compile(r"(?:youtube\.com/watch\?(?:.*&)?v=)([a-zA-Z0-9_-]{11})"),
@@ -98,13 +93,12 @@ async def get_overlapping_chunks(video_url: str) -> list[dict]:
     video_id = extract_video_id(video_url)
 
     try:
-        fragments = await asyncio.to_thread(YouTubeTranscriptApi.get_transcript, video_id)
-    except TranscriptsDisabled:
-        raise ValueError(f"Transcripts are disabled for video: {video_id}")
-    except NoTranscriptFound:
-        raise ValueError(f"No transcript found for video: {video_id}")
-    except VideoUnavailable:
-        raise ValueError(f"Video is unavailable or private: {video_id}")
+        api = YouTubeTranscriptApi()
+        fetched = await asyncio.to_thread(api.fetch, video_id)
+        fragments = [
+            {"text": s.text, "start": s.start, "duration": s.duration}
+            for s in fetched
+        ]
     except Exception as exc:
         raise ValueError(f"Failed to retrieve transcript for {video_id}: {exc}") from exc
 
