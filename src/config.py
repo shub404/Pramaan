@@ -6,6 +6,7 @@ from pathlib import Path
 
 os.environ["HF_HOME"] = "D:\\Pramaan_Storage\\hf_cache"
 os.environ["OLLAMA_MODELS"] = "D:\\Pramaan_Storage\\ollama_cache"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 BASE_DIR: Path = Path(__file__).parent.parent.resolve()
 DB_PATH: str = str(BASE_DIR / "pramaan.db")

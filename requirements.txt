@@ -13,3 +13,4 @@ torch
 faiss-cpu
 ddgs
 numpy
+psutil
