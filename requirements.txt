@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+aiosqlite
+httpx
+pydantic
+requests
+streamlit
+nltk
+youtube-transcript-api
+sentence-transformers
+transformers
+torch
+faiss-cpu
+ddgs
+numpy

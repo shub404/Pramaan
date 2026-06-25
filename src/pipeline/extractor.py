@@ -12,6 +12,7 @@ from src.config import (
 )
 from src.models.schemas import ClaimObject
 from src.pipeline._model_cache import get_embedding_model
+from src.utils.sanitizer import clean_and_parse_json
 
 
 class ExtractedClaim(BaseModel):
@@ -42,7 +43,6 @@ _SYSTEM_PROMPT = (
     "Return ONLY valid JSON matching the required schema. No preamble. No explanation."
 )
 
-# backup warning prompt to return only JSON format
 _STRICT_ADDENDUM = (
     "\n\nCRITICAL: Output ONLY the JSON object. Any text outside the JSON structure "
     "will cause a system failure."
@@ -50,7 +50,7 @@ _STRICT_ADDENDUM = (
 
 _MAX_LLM_RETRIES = 2
 
-# Extract the claims from the chunk of transcript provided
+
 async def _extract_from_chunk(
     client: httpx.AsyncClient, chunk: dict
 ) -> list[ExtractedClaim]:
@@ -71,7 +71,8 @@ async def _extract_from_chunk(
             response = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
             response.raise_for_status()
             content = response.json()["message"]["content"]
-            parsed = ExtractedClaimsList.model_validate_json(content)
+            cleaned = clean_and_parse_json(content)
+            parsed = ExtractedClaimsList.model_validate(cleaned)
             return parsed.claims
         except (
             httpx.HTTPStatusError,
@@ -85,7 +86,7 @@ async def _extract_from_chunk(
 
     return []
 
-# Remove duplicates from the claims returned by above function
+
 def deduplicate_claims(claims: list[ClaimObject]) -> list[ClaimObject]:
     seen: dict[str, ClaimObject] = {}
     for claim in claims:
@@ -122,7 +123,6 @@ def deduplicate_claims(claims: list[ClaimObject]) -> list[ClaimObject]:
                 )
                 merged = ClaimObject(
                     claim_id="",
-                    session_uuid="",
                     claim_text=winner_text,
                     importance_score=max(merged.importance_score, candidate.importance_score),
                     timestamp_start=min(merged.timestamp_start, candidate.timestamp_start),
@@ -134,8 +134,7 @@ def deduplicate_claims(claims: list[ClaimObject]) -> list[ClaimObject]:
 
     return result
 
-# sort by importance, and remove irrelevant claims 
-# also generates claim id for each
+
 async def extract_claims_from_chunks(
     chunks: list[dict], video_url: str
 ) -> list[ClaimObject]:
@@ -148,7 +147,6 @@ async def extract_claims_from_chunks(
                 raw.append(
                     ClaimObject(
                         claim_id="",
-                        session_uuid="",
                         timestamp_start=chunk["timestamp_start"],
                         timestamp_end=chunk["timestamp_end"],
                         claim_text=ec.claim_text,
@@ -162,8 +160,6 @@ async def extract_claims_from_chunks(
 
     deduplicated = deduplicate_claims(raw)
 
-    # completely ignores of importance_score is 1
-    # considers verifying once if the score is > 1
     if not deduplicated or all(c.importance_score == 1 for c in deduplicated):
         return []
 
@@ -179,7 +175,6 @@ async def extract_claims_from_chunks(
         finalized.append(
             ClaimObject(
                 claim_id=claim_id,
-                session_uuid="",
                 timestamp_start=claim.timestamp_start,
                 timestamp_end=claim.timestamp_end,
                 claim_text=claim.claim_text,

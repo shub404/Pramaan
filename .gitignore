@@ -8,3 +8,4 @@ pramaan.db
 venv/
 *.egg-info/
 .pytest_cache/
+stress_test.py
