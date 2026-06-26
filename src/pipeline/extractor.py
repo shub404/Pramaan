@@ -6,10 +6,11 @@ from sentence_transformers import util
 
 from src.config import (
     LLM_MODEL,
-    MAX_CLAIMS_PER_VIDEO,
     OLLAMA_BASE_URL,
     SEMANTIC_DEDUPLICATION_THRESHOLD,
 )
+
+_MAX_CLAIMS_PER_VIDEO = 4  # kept as local default; no longer driven by config
 from src.models.schemas import ClaimObject
 from src.pipeline._model_cache import get_embedding_model
 from src.utils.sanitizer import clean_and_parse_json
@@ -164,7 +165,7 @@ async def extract_claims_from_chunks(
         return []
 
     deduplicated.sort(key=lambda c: c.importance_score, reverse=True)
-    top = deduplicated[:MAX_CLAIMS_PER_VIDEO]
+    top = deduplicated[:_MAX_CLAIMS_PER_VIDEO]
 
     finalized: list[ClaimObject] = []
     for claim in top:

@@ -1,240 +1,242 @@
-import json
 import time
 
 import requests
 import streamlit as st
 
 _BACKEND = "http://localhost:8000"
-_TERMINAL_STATES = {"VERIFIED", "FAILED", "FAILED_TIMEOUT", "NO_VERIFIABLE_CLAIMS_FOUND"}
-_TIMEOUT_SECONDS = 120
-_SEGMENT_WINDOW = 8
+
+
+def _fmt_time(seconds: int) -> str:
+    m, s = divmod(max(0, seconds), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _get_pointer() -> int:
+    """Compute the current clock pointer from wall time so it stays accurate."""
+    if st.session_state.clock_running and st.session_state.clock_wall_start:
+        elapsed = int(time.time() - st.session_state.clock_wall_start)
+        return st.session_state.clock_pointer_at_start + elapsed
+    return st.session_state.clock_pointer_at_start
+
+
+def _start_clock(pointer: int | None = None):
+    """Start or resume the clock from the given pointer (or current position)."""
+    if pointer is not None:
+        st.session_state.clock_pointer_at_start = max(0, pointer)
+    st.session_state.clock_wall_start = time.time()
+    st.session_state.clock_running = True
+
+
+def _pause_clock():
+    st.session_state.clock_pointer_at_start = _get_pointer()
+    st.session_state.clock_wall_start = None
+    st.session_state.clock_running = False
+
+
+def _verdict_color(verdict: str) -> str:
+    return {"SUPPORTED": "green", "REFUTED": "red", "CONTRADICTORY": "orange"}.get(verdict, "blue")
+
+
+def _verdict_icon(verdict: str) -> str:
+    return {"SUPPORTED": "✅", "REFUTED": "❌", "CONTRADICTORY": "⚠️"}.get(verdict, "ℹ️")
+
+
+def _render_claim_card(claim: dict):
+    verdict = claim.get("verdict_label", "UNVERIFIABLE")
+    confidence = claim.get("composite_confidence_score", 0.0)
+    pct = int(confidence * 100)
+    icon = _verdict_icon(verdict)
+    ts = _fmt_time(claim.get("timestamp", 0))
+    color = _verdict_color(verdict)
+
+    with st.container(border=True):
+        col_v, col_c, col_t = st.columns([3, 1, 1])
+        with col_v:
+            st.markdown(
+                f"<span style='color:{color};font-weight:700;font-size:1rem'>"
+                f"{icon} {verdict}</span>",
+                unsafe_allow_html=True,
+            )
+        with col_c:
+            st.markdown(
+                f"<span style='font-size:1.4rem;font-weight:700;color:{color}'>{pct}%</span>",
+                unsafe_allow_html=True,
+            )
+        with col_t:
+            st.caption(f"⏱ {ts}")
+
+        claim_text = claim.get("claim_text", "")
+        if claim_text:
+            st.markdown(f"> *{claim_text}*")
+
+        explanation = claim.get("explanation", "")
+        if explanation:
+            st.write(explanation)
+
+        sources = claim.get("sources", [])
+        if sources:
+            with st.expander(f"Sources ({len(sources)})"):
+                for src in sources:
+                    url = src.get("url", "")
+                    snippet = src.get("snippet_text", "")
+                    if url:
+                        st.markdown(f"[{url}]({url})")
+                    if snippet:
+                        st.caption(snippet[:200])
+
 
 st.set_page_config(page_title="Pramaan | LiveFact AI", layout="wide")
 
-if "clock_pointer" not in st.session_state:
-    st.session_state.clock_pointer = 0
-if "clock_running" not in st.session_state:
-    st.session_state.clock_running = False
-if "processed_map" not in st.session_state:
-    st.session_state.processed_map = None
-if "fact_history" not in st.session_state:
-    st.session_state.fact_history = []
+# --- Session state defaults ---
+for key, default in [
+    ("clock_running", False),
+    ("clock_wall_start", None),   # float: wall time when clock last started
+    ("clock_pointer_at_start", 0),  # pointer value at clock_wall_start moment
+    ("duration_seconds", 0),
+    ("session_uuid", None),
+    ("verified_claims", []),
+    ("returned_claim_ids", set()),
+    ("pending_count", 0),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-
-def _rolling_segment(processed_map: dict, pointer: int) -> str:
-    texts, seen = [], set()
-    for s in range(max(0, pointer - _SEGMENT_WINDOW), pointer + 1):
-        t = processed_map.get(str(s), {}).get("quoted_text", "")
-        if t and t not in seen:
-            seen.add(t)
-            texts.append(t)
-    return " ".join(texts)
-
-
-def _verdict_badge(verdict: str):
-    if verdict == "SUPPORTED":
-        st.success(f"VERDICT: {verdict}")
-    elif verdict == "REFUTED":
-        st.error(f"VERDICT: {verdict}")
-    elif verdict == "CONTRADICTORY":
-        st.warning(f"VERDICT: {verdict}")
-    else:
-        st.info(f"VERDICT: {verdict or 'UNVERIFIABLE'}")
-
-
-def _render_fact_card(entry: dict):
-    with st.container(border=True):
-        ts = entry.get("timestamp", 0)
-        st.caption(f"⏱ Detected at {ts}s")
-        quoted = entry.get("quoted_text", "")
-        if quoted:
-            st.markdown(f"> {quoted}")
-        _verdict_badge(entry.get("verdict_label", "UNVERIFIABLE"))
-        confidence = entry.get("composite_confidence_score", 0.0)
-        st.metric("Confidence", f"{confidence * 100:.0f}%")
-        explanation = entry.get("explanation", "")
-        if explanation:
-            st.write(explanation)
-        sources = entry.get("sources", [])
-        if sources:
-            with st.expander("Evidence Sources"):
-                for src in sources:
-                    st.markdown(f"**{src.get('url', '')}**")
-                    st.caption(src.get("snippet_text", ""))
-
-
+# --- Sidebar ---
 with st.sidebar:
     st.title("Playback Controls")
 
     if st.session_state.clock_running:
         if st.button("⏸ Pause", use_container_width=True):
-            st.session_state.clock_running = False
+            _pause_clock()
             st.rerun()
     else:
         if st.button("▶ Resume", use_container_width=True):
-            if st.session_state.processed_map:
-                max_sec = max(int(k) for k in st.session_state.processed_map)
-                if st.session_state.clock_pointer >= max_sec:
-                    st.session_state.clock_pointer = 0
-            st.session_state.clock_running = True
+            _start_clock()
             st.rerun()
 
-    col_back, col_fwd = st.columns(2)
-    with col_back:
-        if st.button("-2s", use_container_width=True):
-            st.session_state.clock_pointer = max(0, st.session_state.clock_pointer - 2)
+    col_b, col_f = st.columns(2)
+    with col_b:
+        if st.button("−5s", use_container_width=True):
+            _start_clock(max(0, _get_pointer() - 5)) if st.session_state.clock_running else None
+            if not st.session_state.clock_running:
+                st.session_state.clock_pointer_at_start = max(0, _get_pointer() - 5)
             st.rerun()
-    with col_fwd:
-        if st.button("+2s", use_container_width=True):
-            st.session_state.clock_pointer += 2
+    with col_f:
+        if st.button("+5s", use_container_width=True):
+            new_ptr = min(st.session_state.duration_seconds, _get_pointer() + 5)
+            if st.session_state.clock_running:
+                _start_clock(new_ptr)
+            else:
+                st.session_state.clock_pointer_at_start = new_ptr
             st.rerun()
 
-    if st.session_state.processed_map:
-        max_sec = max(int(k) for k in st.session_state.processed_map)
+    dur = st.session_state.duration_seconds
+    if dur > 0:
+        pointer = _get_pointer()
         st.progress(
-            min(st.session_state.clock_pointer / max(max_sec, 1), 1.0),
-            text=f"{st.session_state.clock_pointer}s / {max_sec}s",
+            min(pointer / dur, 1.0),
+            text=f"{_fmt_time(pointer)} / {_fmt_time(dur)}",
         )
 
     st.divider()
     if st.button("Reset", use_container_width=True):
-        st.session_state.clock_pointer = 0
         st.session_state.clock_running = False
-        st.session_state.processed_map = None
-        st.session_state.fact_history = []
+        st.session_state.clock_wall_start = None
+        st.session_state.clock_pointer_at_start = 0
+        st.session_state.duration_seconds = 0
+        st.session_state.session_uuid = None
+        st.session_state.verified_claims = []
+        st.session_state.returned_claim_ids = set()
+        st.session_state.pending_count = 0
         st.rerun()
 
-st.title("Pramaan | LiveFact AI Engine")
-st.caption("Local AI-driven fact-verification for YouTube videos.")
+# --- Header ---
+st.title("Pramaan | LiveFact AI")
+st.caption("Real-time fact verification — sentence by sentence as the video plays.")
 
-left_col, right_col = st.columns([1, 1])
+left_col, right_col = st.columns([1, 1.6])
 
+# --- Left column ---
 with left_col:
-    st.subheader("Pipeline Control")
+    st.subheader("Submit Video")
     url_input = st.text_input(
-        "YouTube Video URL",
+        "YouTube URL",
         placeholder="https://www.youtube.com/watch?v=...",
     )
-    run_button = st.button("Run Verification", type="primary")
+    run_btn = st.button("Start Verification", type="primary", use_container_width=True)
 
-    if run_button and url_input:
-        try:
-            resp = requests.post(
-                f"{_BACKEND}/api/verify",
-                json={"url": url_input},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            st.session_state.session_uuid = resp.json()["session_uuid"]
-            st.session_state.start_time = time.time()
-            st.session_state.pipeline_done = False
-            st.session_state.clock_pointer = 0
-            st.session_state.clock_running = False
-            st.session_state.processed_map = None
-            st.session_state.fact_history = []
-        except requests.RequestException as exc:
-            st.error(f"Could not reach the Pramaan backend: {exc}")
-            st.stop()
-
-    if (
-        "session_uuid" in st.session_state
-        and not st.session_state.get("pipeline_done", False)
-        and st.session_state.processed_map is None
-    ):
-        session_uuid = st.session_state.session_uuid
-        start_time = st.session_state.get("start_time", time.time())
-        status_area = st.empty()
-
-        while True:
-            if time.time() - start_time >= _TIMEOUT_SECONDS:
-                status_area.warning(
-                    "Verification timed out after 120 seconds. "
-                    "The backend may still be processing in the background."
-                )
-                st.session_state.pipeline_done = True
-                break
-
+    if run_btn and url_input:
+        with st.spinner("Fetching transcript…"):
             try:
-                poll_resp = requests.get(
-                    f"{_BACKEND}/api/status/{session_uuid}", timeout=10
+                resp = requests.post(
+                    f"{_BACKEND}/api/verify",
+                    json={"url": url_input},
+                    timeout=30,
                 )
-                poll_resp.raise_for_status()
-                payload = poll_resp.json()
-                claims = payload.get("claims", [])
-                timeline_raw = payload.get("timeline")
-            except requests.RequestException:
-                time.sleep(2)
-                continue
+                resp.raise_for_status()
+                data = resp.json()
+                st.session_state.session_uuid = data["session_uuid"]
+                st.session_state.duration_seconds = data["duration_seconds"]
+                st.session_state.verified_claims = []
+                st.session_state.returned_claim_ids = set()
+                st.session_state.pending_count = 0
+                _start_clock(0)
+            except requests.RequestException as exc:
+                st.error(f"Could not reach Pramaan backend: {exc}")
 
-            with status_area.container():
-                if not claims:
-                    st.info("Ingesting transcript and extracting claims...")
-                else:
-                    for claim in claims:
-                        status = claim.get("verification_status", "PENDING")
-                        label = claim.get("claim_text", "Claim")
-                        if status in _TERMINAL_STATES:
-                            st.success(f"{label} — `{status}`")
-                        else:
-                            st.info(f"{label} — `{status}`")
+    if st.session_state.session_uuid:
+        pointer = _get_pointer()
+        verified = len(st.session_state.verified_claims)
+        pending = st.session_state.pending_count
+        status_icon = "🟢" if st.session_state.clock_running else "⏸"
+        st.markdown(
+            f"{status_icon} **Verified:** {verified} &nbsp;|&nbsp; "
+            f"**Pending:** {pending} &nbsp;|&nbsp; "
+            f"**Clock:** {_fmt_time(pointer)}"
+        )
 
-            all_terminal = bool(claims) and all(
-                c.get("verification_status") in _TERMINAL_STATES for c in claims
+        if not st.session_state.verified_claims and st.session_state.clock_running:
+            st.info(
+                "Qwen is extracting claims from transcript windows every 15s. "
+                "Results appear on the right once each claim is verified (~10–15s)."
             )
 
-            if all_terminal and timeline_raw:
-                st.session_state.processed_map = json.loads(timeline_raw)
-                st.session_state.clock_running = True
-                st.session_state.pipeline_done = True
-                status_area.empty()
-                break
-
-            time.sleep(2)
-
+# --- Right column ---
 with right_col:
-    st.subheader("Live Verification Terminal")
+    st.subheader("Verified Claims — Live Feed")
 
-    if st.session_state.processed_map is None:
-        st.markdown("_Submit a YouTube URL on the left to begin live verification tracking._")
-
+    if not st.session_state.session_uuid:
+        st.markdown("_Submit a YouTube URL to start the live fact-check feed._")
+    elif not st.session_state.verified_claims:
+        st.markdown("_No claims verified yet. Results appear here as they complete._")
     else:
-        processed_map = st.session_state.processed_map
-        max_sec = max(int(k) for k in processed_map)
-        pointer = st.session_state.clock_pointer
-        frame = processed_map.get(str(pointer))
+        for claim in st.session_state.verified_claims:
+            _render_claim_card(claim)
 
-        if frame and frame.get("is_factual") and not any(
-            h["explanation"] == frame["explanation"]
-            for h in st.session_state.fact_history
-        ):
-            st.session_state.fact_history.append({"timestamp": pointer, **frame})
+# --- Clock tick (runs every rerender when clock is active) ---
+if st.session_state.clock_running and st.session_state.session_uuid:
+    pointer = _get_pointer()
+    dur = st.session_state.duration_seconds
 
-        segment_text = _rolling_segment(processed_map, pointer)
-        status_label = "⏸ Paused" if not st.session_state.clock_running else "⏱ Live"
-        st.caption(f"{status_label} — {pointer}s")
-
-        if segment_text:
-            st.markdown(
-                f"<div style='background:#1e1e1e;color:#d4d4d4;padding:10px 14px;"
-                f"border-radius:6px;font-family:monospace;font-size:0.9rem;"
-                f"line-height:1.6;margin-bottom:12px'>{segment_text}</div>",
-                unsafe_allow_html=True,
+    if pointer >= dur > 0:
+        _pause_clock()
+        st.rerun()
+    else:
+        try:
+            tick_resp = requests.get(
+                f"{_BACKEND}/api/tick/{st.session_state.session_uuid}",
+                params={"to_second": pointer},
+                timeout=5,
             )
-        else:
-            st.caption("_[no transcript at this position]_")
+            if tick_resp.ok:
+                data = tick_resp.json()
+                for claim in data.get("new_claims", []):
+                    if claim["claim_id"] not in st.session_state.returned_claim_ids:
+                        st.session_state.verified_claims.insert(0, claim)
+                        st.session_state.returned_claim_ids.add(claim["claim_id"])
+                st.session_state.pending_count = data.get("pending_count", 0)
+        except requests.RequestException:
+            pass
 
-        if st.session_state.fact_history:
-            st.markdown("**Verified Claims — Newest First**")
-            for entry in reversed(st.session_state.fact_history):
-                _render_fact_card(entry)
-        else:
-            st.caption("No verified claims detected yet.")
-
-        if st.session_state.clock_running:
-            if pointer < max_sec:
-                st.session_state.clock_pointer += 1
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.session_state.clock_running = False
-                st.rerun()
+        time.sleep(0.8)
+        st.rerun()

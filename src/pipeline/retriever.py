@@ -8,7 +8,7 @@ import faiss
 import numpy as np
 from ddgs import DDGS
 
-from src.config import COSINE_SIMILARITY_THRESHOLD
+from src.config import COSINE_SIMILARITY_THRESHOLD, DDG_MAX_RESULTS, EVIDENCE_TOP_K
 from src.pipeline._model_cache import get_embedding_model
 
 _logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ def _run_ddg_search(query: str) -> list[dict]:
     for attempt in range(_MAX_RETRIES):
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=10))
+                results = list(ddgs.text(query, max_results=DDG_MAX_RESULTS))
             return [
                 {
                     "title": r.get("title", ""),
@@ -85,13 +85,15 @@ async def get_relevant_evidence(claim_text: str) -> list[dict]:
     scores, indices = index.search(claim_vector, k=len(sentences))
 
     raw_scores = scores[0]
-    top_5 = sorted(raw_scores, reverse=True)[:5]    # considers only top 5 web results, and not other irrelevant
-    print(f"  [retriever] top-5 cosine scores: {[round(float(s), 4) for s in top_5]}")
+    top_k_scores = sorted(raw_scores, reverse=True)[:EVIDENCE_TOP_K]
+    print(f"  [retriever] top-{EVIDENCE_TOP_K} cosine scores: {[round(float(s), 4) for s in top_k_scores]}")
     print(f"  [retriever] threshold: {COSINE_SIMILARITY_THRESHOLD}  |  sentences above threshold: "
           f"{sum(1 for s in raw_scores if s >= COSINE_SIMILARITY_THRESHOLD)}")
 
-    return [
-        {"url": sources[idx], "snippet_text": sentences[idx]}
-        for score, idx in zip(raw_scores, indices[0])
-        if idx != -1 and score >= COSINE_SIMILARITY_THRESHOLD
-    ]
+    results = []
+    for score, idx in zip(raw_scores, indices[0]):
+        if idx != -1 and score >= COSINE_SIMILARITY_THRESHOLD:
+            results.append({"url": sources[idx], "snippet_text": sentences[idx]})
+        if len(results) >= EVIDENCE_TOP_K:
+            break
+    return results
