@@ -1,4 +1,4 @@
-import aiosqlite                                # using aiosqlite, cuz normal sqlite would block other process while one is happening
+import aiosqlite
 from datetime import datetime, timezone
 
 from src.config import DB_PATH
@@ -14,11 +14,14 @@ async def init_db():
                 created_at   TIMESTAMP NOT NULL
             )
         """)
-        # uses foreign key
+        try:
+            await db.execute("ALTER TABLE sessions ADD COLUMN timeline_json TEXT")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS claims (
                 claim_id                  TEXT PRIMARY KEY,
-                session_uuid              TEXT NOT NULL REFERENCES sessions(session_uuid), 
+                session_uuid              TEXT NOT NULL REFERENCES sessions(session_uuid),
                 timestamp_start           INTEGER,
                 timestamp_end             INTEGER,
                 claim_text                TEXT,
@@ -65,7 +68,7 @@ async def insert_claims(claims: list[ClaimObject], session_uuid: str):
         )
         await db.commit()
 
-# change status from pending/verified/false etc
+
 async def update_claim_status(claim_id: str, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -91,7 +94,16 @@ async def finalize_claim_verdict(claim_id: str, confidence: float, label: str, s
         await db.commit()
 
 
-async def get_session_status(session_uuid: str) -> list[dict]:
+async def store_session_timeline(session_uuid: str, timeline_json: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE sessions SET timeline_json = ? WHERE session_uuid = ?",
+            (timeline_json, session_uuid),
+        )
+        await db.commit()
+
+
+async def get_session_status(session_uuid: str) -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -99,4 +111,13 @@ async def get_session_status(session_uuid: str) -> list[dict]:
             (session_uuid,),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            claims = [dict(row) for row in rows]
+
+        async with db.execute(
+            "SELECT timeline_json FROM sessions WHERE session_uuid = ?",
+            (session_uuid,),
+        ) as cursor:
+            session_row = await cursor.fetchone()
+            timeline = session_row["timeline_json"] if session_row else None
+
+    return {"claims": claims, "timeline": timeline}

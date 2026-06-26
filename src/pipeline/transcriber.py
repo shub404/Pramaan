@@ -128,3 +128,17 @@ async def get_overlapping_chunks(video_url: str) -> list[dict]:
         return []
 
     return _build_windows(sentences)
+
+
+async def get_raw_fragments(video_url: str) -> list[dict]:
+    video_id = extract_video_id(video_url)
+
+    try:
+        api = YouTubeTranscriptApi()
+        fetched = await asyncio.to_thread(api.fetch, video_id)
+        return [
+            {"text": s.text, "start": s.start, "duration": s.duration}
+            for s in fetched
+        ]
+    except Exception as exc:
+        raise ValueError(f"Failed to retrieve transcript for {video_id}: {exc}") from exc
