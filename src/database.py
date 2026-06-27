@@ -157,6 +157,7 @@ async def get_verified_claims(session_uuid: str) -> list[dict]:
             "composite_confidence_score": d.get("composite_confidence_score") or 0.0,
             "explanation": summary.get("explanation", ""),
             "sources": summary.get("sources", []),
+            "updated_at": d.get("updated_at") or 0.0,
         })
     return result
 
